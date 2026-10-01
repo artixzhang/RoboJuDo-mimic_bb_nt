@@ -201,7 +201,6 @@
     "layout": "field_major",
     "history_order": "oldest_to_newest",
     "preprocessing": "multiply each field by its scale; no other normalization or input clipping",
-    "sensor_delay_steps": 1,
     "fields": [
       {
         "name": "phase",
@@ -259,16 +258,13 @@
         "scale": 0.25,
         "source": "R_world_from_pelvis_at_reset.T @ (hoop_center_world - pelvis_position_world_at_reset); xyz, frozen until reset"
       }
-    ],
-    "timing": "sample before inference; only sensor histories have sensor_delay_steps; phase and applied-target history use the current tick"
+    ]
   },
   "action": {
     "unit": "rad",
     "output": "joint_position_offset_from_nominal",
     "target": "clip(nominal_joint_position + network_output, safe_lower_joint_position, safe_upper_joint_position)",
-    "delay_steps": 0,
-    "timing": "clip before action delay; pad delay queue with the actual initial PD target; match total latency without duplicating hardware delay",
-    "pd": "tau = pd_stiffness * (target - measured_q) - pd_damping * measured_qdot"
+    "delay_steps": 0
   },
   "phase": {
     "pre_hold_s": 5.0,
