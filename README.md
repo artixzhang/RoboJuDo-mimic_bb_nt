@@ -48,6 +48,7 @@ Our framework highlights:
  - [📄Introduction](#introduction)
  - [🛠️Easy Setup](#%EF%B8%8Feasy-setup)
  - [📖Quick Start](#quick-start)
+ - [🏀 G1 Basketball Student: sim2sim and C++ deployment](docs/basketball.md)
  - [🧩 Develop and Contribute](#develop-and-contribute)
 
 

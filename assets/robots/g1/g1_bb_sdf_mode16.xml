@@ -1,8 +1,7 @@
 <mujoco model="g1_29dof_rev_1_0">
   <!-- Mode16-aligned variant derived from g1_bb_sdf.xml.
-       The absolute mesh path keeps this standalone copy loadable without
-       modifying or duplicating the existing robot assets. -->
-  <compiler angle="radian" meshdir="/home/artix/Projects/RoboJuDo-bb-mimic/assets/robots/g1/meshes"/>
+       Meshes are resolved relative to this robot asset. -->
+  <compiler angle="radian" meshdir="meshes"/>
 
   <extension>
     <!-- Concave collision patches matching the custom bowl-hand visuals. -->

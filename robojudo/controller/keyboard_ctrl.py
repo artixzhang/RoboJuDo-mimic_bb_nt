@@ -20,6 +20,7 @@ class KeyboardCtrl(Controller):
         self.reset()
 
     def reset(self):
+        self._pressed_keys = set()
         while not self.event_queue.empty():
             try:
                 self.event_queue.get_nowait()
@@ -44,8 +45,15 @@ class KeyboardCtrl(Controller):
         if len(self.triggers) == 0:
             return ctrl_data, commands
 
-        for event in ctrl_data["keyboard_event"]:
-            if event["type"] == "keyboard" and not event["pressed"]:  # trigger when key is released
+        for event in ctrl_data["keyboard_event"][:]:
+            if self.cfg_ctrl.trigger_on_press:
+                if not event["pressed"]:
+                    self._pressed_keys.discard(event["name"])
+                    continue
+                if event["name"] in self._pressed_keys:
+                    continue
+                self._pressed_keys.add(event["name"])
+            if event["type"] == "keyboard" and event["pressed"] == self.cfg_ctrl.trigger_on_press:
                 command = self.triggers.get(event["name"], None)
                 if command is not None:
                     commands.append(command)

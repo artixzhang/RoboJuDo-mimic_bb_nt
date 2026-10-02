@@ -289,6 +289,58 @@ class RlPipeline(Pipeline):
         self._set_default_pose_mode(False)
         logger.warning("Blend-in done — motion starting")
 
+    def _ramp_to_pose(self, desired_motor_angle, ramp_steps, trace=None):
+        """Native Prepare interpolation, with fresh feedback and emergency-stop polling."""
+        logger.warning(
+            f"prepare: phase 1 — ramp joints ({ramp_steps} steps, "
+            f"{ramp_steps / self.freq:.1f}s)"
+        )
+        pbar = ProgressBar("Prepare: ramp joints", ramp_steps)
+
+        last_step_time = time.time()
+        for t in range(ramp_steps):
+            cycle = trace.begin_cycle("prepare") if trace else None
+            read_start = time.perf_counter_ns()
+            self.env.update()
+            env_data = self.env.get_data()
+            read_end = time.perf_counter_ns()
+            ctrl_data = self.ctrl_manager.get_ctrl_data(env_data)
+            if "[SHUTDOWN]" in ctrl_data.get("COMMANDS", []):
+                self.env.shutdown()
+                if trace:
+                    trace.event("emergency_stop", stage="prepare", env=env_data)
+                raise SystemExit
+            current_motor_angle = np.array(self.env.dof_pos)
+            alpha = t / (ramp_steps - 1) if ramp_steps > 1 else 1.0
+            action = (1 - alpha) * current_motor_angle + alpha * desired_motor_angle
+
+            submit_start = time.perf_counter_ns()
+            try:
+                self.env.step(action)
+            except Exception as exc:
+                if trace:
+                    trace.event("submission_error", stage="prepare", error=repr(exc), env=env_data, target=action)
+                raise
+            submit_end = time.perf_counter_ns()
+            if trace:
+                log_ms = trace.sample(
+                    "prepare", env_data, ctrl_data.get("COMMANDS", []), action,
+                    {"read_ms": (read_end - read_start) / 1e6,
+                     "submit_ms": (submit_end - submit_start) / 1e6},
+                    prepare_step=t, alpha=alpha, submitted=True,
+                    submit_call_ns=submit_start, submit_return_ns=submit_end,
+                )
+                trace.finish_cycle(cycle, "prepare", log_ms)
+
+            time_diff = last_step_time + self.dt - time.time()
+            if time_diff > 0:
+                time.sleep(time_diff)
+            else:
+                logger.error("Warning: frame drop")
+            last_step_time = time.time()
+            pbar.update()
+        pbar.close()
+
     def prepare(self, init_motor_angle=None, prepare_seconds=None):
         if init_motor_angle is not None:
             desired_motor_angle = init_motor_angle
@@ -309,29 +361,7 @@ class RlPipeline(Pipeline):
             ramp_steps = int(3.0 * self.freq)
             blend_steps = int(5.0 * self.freq)
 
-        # ── Phase 1: Ramp joints to default pose ──
-        logger.warning(
-            f"prepare: phase 1 — ramp joints ({ramp_steps} steps, "
-            f"{ramp_steps / self.freq:.1f}s)"
-        )
-        pbar = ProgressBar("Prepare: ramp joints", ramp_steps)
-
-        last_step_time = time.time()
-        for t in range(ramp_steps):
-            current_motor_angle = np.array(self.env.dof_pos)
-            alpha = min(t / max(ramp_steps - 1, 1), 1.0)
-            action = (1 - alpha) * current_motor_angle + alpha * desired_motor_angle
-
-            self.env.step(action)
-
-            time_diff = last_step_time + self.dt - time.time()
-            if time_diff > 0:
-                time.sleep(time_diff)
-            else:
-                logger.error("Warning: frame drop")
-            last_step_time = time.time()
-            pbar.update()
-        pbar.close()
+        self._ramp_to_pose(desired_motor_angle, ramp_steps)
 
         # Reset policy for a clean start — frame goes back to 0.
         self.reset()

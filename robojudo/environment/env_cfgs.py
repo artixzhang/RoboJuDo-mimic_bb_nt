@@ -35,6 +35,8 @@ class MujocoEnvCfg(EnvCfg):
     sim_decimation: int = 20
 
     visualize_extras: bool = True  # TODO: remove
+    headless: bool = False
+    camera_follow: bool = True
 
     random_heading: bool = False
     """Randomize the robot's yaw heading on each spawn/reborn (useful for testing heading alignment)."""

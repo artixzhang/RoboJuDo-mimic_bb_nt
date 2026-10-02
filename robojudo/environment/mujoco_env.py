@@ -1,12 +1,13 @@
+import inspect
 import logging
 import time
 
 import mujoco
-import mujoco_viewer
 import numpy as np
 
 from robojudo.environment import Environment, env_registry
 from robojudo.environment.env_cfgs import MujocoEnvCfg
+from robojudo.environment.utils.mujoco_viewer import MujocoViewer
 from robojudo.environment.utils.mujoco_viz import MujocoVisualizer
 from robojudo.utils.util_func import quat_rotate_inverse_np, quatToEuler
 
@@ -25,26 +26,42 @@ class MujocoEnv(Environment):
         self.sim_decimation = cfg_env.sim_decimation
         self.control_dt = self.sim_dt * self.sim_decimation
 
-        self.model = mujoco.MjModel.from_xml_path(cfg_env.xml)  # pyright: ignore[reportAttributeAccessIssue]
+        self.model = self._load_model()
         self.model.opt.timestep = self.sim_dt
         self.data = mujoco.MjData(self.model)  # pyright: ignore[reportAttributeAccessIssue]
+        # Free objects may occur before or after the robot in qpos/qvel.
+        joint_ids = np.array([self.model.joint(name).id for name in self.joint_names])
+        self._qpos_idx = self.model.jnt_qposadr[joint_ids]
+        self._qvel_idx = self.model.jnt_dofadr[joint_ids]
+        root_body = self.model.body_rootid[self.model.jnt_bodyid[joint_ids[0]]]
+        root_joint = self.model.body_jntadr[root_body]
+        self._root_qpos_adr = self.model.jnt_qposadr[root_joint]
+        self._root_qvel_adr = self.model.jnt_dofadr[root_joint]
+        self._actuator_idx = np.array([
+            np.flatnonzero(self.model.actuator_trnid[:, 0] == joint_id)[0] for joint_id in joint_ids
+        ])
         # mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
         mujoco.mj_step(self.model, self.data)  # pyright: ignore[reportAttributeAccessIssue]
 
-        self.viewer = mujoco_viewer.MujocoViewer(
-            self.model,
-            self.data,
-            width=1200,
-            height=900,
-            hide_menus=True,
-            diable_key_callbacks=True,
-        )
-        self.viewer.cam.distance = 3.0
-        self.viewer.cam.elevation = -10.0
-        self.viewer.cam.azimuth = 180.0
+        self.viewer = None
+        if not cfg_env.headless:
+            # Both upstream and RoboJuDo's patched viewer are supported.
+            viewer_kwargs = {}
+            if "diable_key_callbacks" in inspect.signature(MujocoViewer).parameters:
+                viewer_kwargs["diable_key_callbacks"] = True
+            self.viewer = MujocoViewer(
+                self.model, self.data, width=1200, height=900, hide_menus=True, **viewer_kwargs,
+            )
+            # Controller owns keys, viewer retains all mouse camera callbacks.
+            import glfw
+
+            glfw.set_key_callback(self.viewer.window, self.viewer._key_callback)
+            self.viewer.cam.distance = 3.0
+            self.viewer.cam.elevation = -10.0
+            self.viewer.cam.azimuth = 180.0
         # self.viewer._paused = True
 
-        if cfg_env.visualize_extras:
+        if cfg_env.visualize_extras and self.viewer is not None:
             self.visualizer = MujocoVisualizer(self.viewer)
         else:
             self.visualizer = None
@@ -56,22 +73,27 @@ class MujocoEnv(Environment):
 
         self.update()  # get initial state
 
+    def _load_model(self):
+        return mujoco.MjModel.from_xml_path(self.cfg_env.xml)
+
     def _apply_random_heading(self):
         """Rotate the root body by a random yaw if random_heading is enabled."""
         if not self.random_heading:
             return
         yaw = np.random.uniform(0, 2 * np.pi)
         c, s = np.cos(yaw / 2), np.sin(yaw / 2)
-        q = self.data.qpos[3:7].copy()  # MuJoCo [w, x, y, z]
+        start = self._root_qpos_adr + 3
+        q = self.data.qpos[start:start + 4].copy()  # MuJoCo [w, x, y, z]
         # Pre-multiply by yaw rotation q_yaw=[c,0,0,s]: q_new = q_yaw ⊗ q
-        self.data.qpos[3] = c * q[0] - s * q[3]
-        self.data.qpos[4] = c * q[1] - s * q[2]
-        self.data.qpos[5] = c * q[2] + s * q[1]
-        self.data.qpos[6] = c * q[3] + s * q[0]
+        self.data.qpos[start:start + 4] = [
+            c * q[0] - s * q[3], c * q[1] - s * q[2],
+            c * q[2] + s * q[1], c * q[3] + s * q[0],
+        ]
 
     def reborn(self, init_qpos=None):
         if init_qpos is not None:
-            self.data.qpos[0:7] = init_qpos
+            start = self._root_qpos_adr
+            self.data.qpos[start:start + 7] = init_qpos
             self.data.qvel[:] = 0.0
             self.data.ctrl[:] = 0.0
         else:
@@ -102,8 +124,8 @@ class MujocoEnv(Environment):
 
     def update(self, simple=False):  # TODO: clean sensors in xml
         """simple: only update dof pos & vel"""
-        dof_pos = self.data.qpos.astype(np.float32)[-self.num_dofs :]
-        dof_vel = self.data.qvel.astype(np.float32)[-self.num_dofs :]
+        dof_pos = self.data.qpos[self._qpos_idx].astype(np.float32)
+        dof_vel = self.data.qvel[self._qvel_idx].astype(np.float32)
 
         self._dof_pos = dof_pos.copy()
         self._dof_vel = dof_vel.copy()
@@ -111,10 +133,11 @@ class MujocoEnv(Environment):
         if simple:
             return
 
-        quat = self.data.qpos.astype(np.float32)[3:7][[1, 2, 3, 0]]
-        ang_vel = self.data.qvel.astype(np.float32)[3:6]
-        base_pos = self.data.qpos.astype(np.float32)[:3]
-        lin_vel = self.data.qvel.astype(np.float32)[0:3]
+        q, v = self._root_qpos_adr, self._root_qvel_adr
+        quat = self.data.qpos[q + 3:q + 7].astype(np.float32)[[1, 2, 3, 0]]
+        ang_vel = self.data.qvel[v + 3:v + 6].astype(np.float32)
+        base_pos = self.data.qpos[q:q + 3].astype(np.float32)
+        lin_vel = self.data.qvel[v:v + 3].astype(np.float32)
 
         if self.born_place_align:
             quat, base_pos = self.base_align.align_transform(quat, base_pos)
@@ -136,28 +159,38 @@ class MujocoEnv(Environment):
             self._torso_quat = fk_info[self._torso_name]["quat"]
             self._torso_pos = fk_info[self._torso_name]["pos"]
 
+    def get_data(self):
+        data = super().get_data()
+        data.sim_time_s = float(self.data.time)
+        return data
+
     def step(self, pd_target, hand_pose=None):
         assert len(pd_target) == self.num_dofs, "pd_target len should be num_dofs of env"
 
         if hand_pose is not None:
             logger.info("Hand pose-->", hand_pose)
 
-        self.viewer.cam.lookat = self.data.qpos.astype(np.float32)[:3]
-        if self.viewer.is_alive:
+        if self.viewer is not None:
+            if not self.viewer.is_alive:
+                raise SystemExit
+            if self.cfg_env.camera_follow:
+                start = self._root_qpos_adr
+                self.viewer.cam.lookat = self.data.qpos[start:start + 3]
             self.viewer.render()
 
         for _ in range(self.sim_decimation):
             torque = (pd_target - self.dof_pos) * self.stiffness - self.dof_vel * self.damping
             torque = np.clip(torque, -self.torque_limits, self.torque_limits)
 
-            self.data.ctrl = torque
+            self.data.ctrl[self._actuator_idx] = torque
 
             mujoco.mj_step(self.model, self.data)  # pyright: ignore[reportAttributeAccessIssue]
             self.update(simple=True)
         self.update(simple=False)
 
     def shutdown(self):
-        self.viewer.close()
+        if self.viewer is not None and self.viewer.is_alive:
+            self.viewer.close()
 
 
 if __name__ == "__main__":

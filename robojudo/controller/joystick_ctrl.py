@@ -75,7 +75,7 @@ class JoystickCtrl(Controller):
         if len(self.triggers) == 0:
             return ctrl_data, commands
 
-        for event in ctrl_data["button_event"]:
+        for event in ctrl_data["button_event"][:]:
             if event["type"] == "button":
                 if event["name"] in self.combination_init_buttons:
                     if event["pressed"]:
@@ -85,7 +85,9 @@ class JoystickCtrl(Controller):
                 else:
                     if event["pressed"]:
                         command = None
-                        if len(self.onhold_buttons) == 0:
+                        if self.triggers.get(event["name"]) == "[SHUTDOWN]":
+                            command = "[SHUTDOWN]"
+                        elif len(self.onhold_buttons) == 0:
                             command = self.triggers.get(event["name"], None)
                         else:
                             event_combination = "+".join(sorted(list(self.onhold_buttons)) + [event["name"]])

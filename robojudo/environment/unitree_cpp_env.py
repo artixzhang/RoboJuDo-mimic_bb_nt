@@ -94,6 +94,7 @@ class UnitreeCppEnv(Environment):
     def update(self):
         # robot state
         self.robot_state = self.unitree.get_robot_state()
+        self._state_read_monotonic_ns = time.perf_counter_ns()
         if self._dof_idx is None:
             self._dof_pos = np.array(self.robot_state.motor_state.q, dtype=np.float32)
             self._dof_vel = np.array(self.robot_state.motor_state.dq, dtype=np.float32)
@@ -150,6 +151,15 @@ class UnitreeCppEnv(Environment):
         # controller
         if self.RemoteControllerHandler:
             self.RemoteControllerHandler(self.robot_state.wireless_remote)
+
+    def get_data(self):
+        data = super().get_data()
+        data.state_tick = int(self.robot_state.tick)
+        data.state_read_monotonic_ns = self._state_read_monotonic_ns
+        torque = np.asarray(self.robot_state.motor_state.tau_est, dtype=np.float32)
+        data.motor_tau_est = torque if self._dof_idx is None else torque[self._dof_idx]
+        data.imu_accelerometer = np.asarray(self.robot_state.imu_state.accelerometer, dtype=np.float32)
+        return data
 
     def step(self, pd_target, hand_pose=None):
         assert len(pd_target) == self.num_dofs, "pd_target len should be num_dofs of env"
