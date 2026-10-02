@@ -142,6 +142,32 @@ class ManualStartTests(unittest.TestCase):
 
 
 class EntryPointTests(unittest.TestCase):
+    def test_keyboard_import_fails_before_backend_construction(self):
+        cfg = make_config(parse_args(["--real"]))
+        with (
+            patch("robojudo.pipeline.basketball_pipeline.import_module", side_effect=ImportError("No X display")),
+            patch("robojudo.pipeline.basketball_pipeline.RlPipeline.__init__") as initialize,
+            self.assertRaisesRegex(RuntimeError, "--no_keyboard"),
+        ):
+            BasketballPipeline(cfg)
+        initialize.assert_not_called()
+
+    def test_partial_initialization_failure_shuts_down_created_backend(self):
+        cfg = make_config(parse_args(["--real", "--no_keyboard"]))
+        env, trace = Mock(), Mock()
+
+        def fail_after_environment(pipeline, config):
+            pipeline.env = env
+            raise RuntimeError("Controller initialization failed")
+
+        with (
+            patch("robojudo.pipeline.basketball_pipeline.RlPipeline.__init__", new=fail_after_environment),
+            self.assertRaisesRegex(RuntimeError, "Controller initialization failed"),
+        ):
+            BasketballPipeline(cfg, trace=trace)
+        env.shutdown.assert_called_once_with()
+        trace.event.assert_called_once_with("shutdown_complete", stage="initialization")
+
     def test_cpp_pipeline_with_fake_sdk_and_without_mujoco_or_display_packages(self):
         code = """
 import sys, types, tempfile

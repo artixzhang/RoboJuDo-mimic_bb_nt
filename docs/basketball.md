@@ -97,6 +97,11 @@ Ready 维持 JSON 初始关节目标，不会主动控制浮动基座平衡；�
 Kp/Kd、nominal、限位和频率来自 JSON；C++ `control_dt=0.01` 秒。
 无显示会话时使用 `--no_keyboard` 和 Unitree 手柄；需要键盘时去掉此参数。
 
+SSH 下若出现 `failed to acquire X connection: Bad display name ""`，是键盘依赖 pynput
+无法连接显示会话，使用 `--no_keyboard`，不需要为此安装 MuJoCo 或设置虚假的 DISPLAY。
+键盘依赖在 C++ 后端创建前检查；后端已经创建但后续初始化失败时，会尝试执行 shutdown，
+成功返回后记录 `shutdown_complete`（`stage=initialization`）。
+
 本仓库锁定的 C++ commit 是 `222028cdaa79cdd7c7cda6645ebd2b02d201be0c`：
 `DataBuffer` 覆盖最新值，LowState 订阅队列长度参数为 1，`step()` 直接调用发送函数。
 后台也会重复最后一个目标；该封装未见命令过期自动阻尼机制，Python 卡住不等于急停。

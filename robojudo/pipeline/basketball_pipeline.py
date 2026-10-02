@@ -2,6 +2,7 @@
 
 import logging
 import time
+from importlib import import_module
 
 import numpy as np
 
@@ -23,7 +24,27 @@ class BasketballPipeline(RlPipeline):
     def __init__(self, cfg, trace=None):
         self.trace = trace
         self._last_logged_mode = None
-        super().__init__(cfg)
+        # pynput opens its display connection on import. Fail before the SDK takes control.
+        if any(controller.ctrl_type == "KeyboardCtrl" for controller in cfg.ctrl):
+            try:
+                import_module("robojudo.controller.keyboard_ctrl")
+            except ImportError as exc:
+                raise RuntimeError("Keyboard unavailable. For SSH/headless deployment, add --no_keyboard.") from exc
+        try:
+            super().__init__(cfg)
+        except BaseException:
+            # main() cannot access this object when its constructor fails.
+            if hasattr(self, "env"):
+                try:
+                    self.env.shutdown()
+                    if cfg.env.is_sim:
+                        self.env.close()
+                except Exception:
+                    logger.exception("Environment cleanup failed during pipeline initialization")
+                else:
+                    if self.trace:
+                        self.trace.event("shutdown_complete", stage="initialization")
+            raise
 
     def self_check(self):
         # Do not run policy dry steps before Prepare has provided a real s_0.
