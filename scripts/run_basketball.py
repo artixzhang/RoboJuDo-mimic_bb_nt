@@ -16,9 +16,7 @@ from robojudo.config.g1.env.g1_env_cfg import G1_29DoF
 from robojudo.config.g1.env.g1_real_env_cfg import G1RealEnvCfg, G1UnitreeCfg
 from robojudo.config.g1.policy.g1_mimic_bb_nt_policy_cfg import MODEL_DIR, load_student_config
 from robojudo.controller.ctrl_cfgs import JoystickCtrlCfg, KeyboardCtrlCfg, UnitreeCtrlCfg
-from robojudo.environment.basketball_mujoco_env import BasketballMujocoEnvCfg
-from robojudo.pipeline.basketball_pipeline import BasketballPipeline
-from robojudo.pipeline.pipeline_cfgs import RlPipelineCfg
+from robojudo.pipeline.basketball_pipeline import BasketballPipeline, BasketballPipelineCfg
 from robojudo.tools.basketball_log import BasketballLog
 from robojudo.tools.dof import merge_dof_cfgs
 
@@ -41,7 +39,12 @@ def parse_args(argv=None):
         "--pre_hold",
         type=float,
         default=0.0,
-        help="0: shoot immediately after Prepare (default); -1: wait for Space/B; positive: seconds at phase=0",
+        help="After Start: 0 advances phase immediately; -1 waits for Space/B; positive holds phase=0 for seconds",
+    )
+    parser.add_argument("--auto_start", action="store_true", help="Simulation only: skip the Ready button wait")
+    parser.add_argument("--link_test", action="store_true", help="Run inference but submit only the initial PD pose")
+    parser.add_argument(
+        "--test_seconds", type=nonnegative, default=30, help="Link test duration after Start; then damping"
     )
     parser.add_argument("--prepare_seconds", type=nonnegative, help="Prepare duration; default: sim 0, real 3 seconds")
     parser.add_argument("--config", default=str(MODEL_DIR / "student_config.json"))
@@ -60,6 +63,10 @@ def parse_args(argv=None):
         parser.error("--pre_hold must be -1 (manual trigger), 0 (immediate), or a positive duration")
     if args.real and (args.headless or args.steps is not None):
         parser.error("--headless and --steps are simulation-only")
+    if args.real and args.auto_start:
+        parser.error("Real hardware requires Start after Prepare; --auto_start is simulation-only")
+    if args.link_test and (args.no_log or args.test_seconds <= 0):
+        parser.error("--link_test requires logging and a positive --test_seconds")
     if args.steps is not None and args.steps <= 0:
         parser.error("--steps must be positive")
     if not all(math.isfinite(x) for x in args.hoop_pos):
@@ -81,7 +88,7 @@ def make_config(args):
         else [
             KeyboardCtrlCfg(
                 trigger_on_press=True,
-                triggers_extra={"Key.space": "[SHOT_TRIGGER]", "r": "[MOTION_RESET]"},
+                triggers_extra={"Key.enter": "[POLICY_START]", "Key.space": "[SHOT_TRIGGER]", "r": "[MOTION_RESET]"},
             )
         ]
     )
@@ -92,8 +99,10 @@ def make_config(args):
             odometry_type="DUMMY",
             unitree=G1UnitreeCfg(net_if=args.net_if, enable_odometry=False, control_dt=1 / policy.freq),
         )
-        ctrl.append(UnitreeCtrlCfg(triggers_extra={"B": "[SHOT_TRIGGER]"}))
+        ctrl.append(UnitreeCtrlCfg(triggers_extra={"Start": "[POLICY_START]", "B": "[SHOT_TRIGGER]"}))
     else:
+        from robojudo.environment.basketball_mujoco_env import BasketballMujocoEnvCfg
+
         sim_dt = 0.001
         decimation = round(1 / policy.freq / sim_dt)
         if decimation < 1 or not math.isclose(decimation * sim_dt, 1 / policy.freq):
@@ -107,8 +116,10 @@ def make_config(args):
             ball_xml=None if args.no_ball else str(ASSETS_DIR / "objects/basketball.xml"),
         )
         if args.joystick:
-            ctrl.append(JoystickCtrlCfg(triggers_extra={"B": "[SHOT_TRIGGER]"}))
-    return RlPipelineCfg(robot="g1", pipeline_type="BasketballPipeline", env=env, policy=policy, ctrl=ctrl)
+            ctrl.append(JoystickCtrlCfg(triggers_extra={"Start": "[POLICY_START]", "B": "[SHOT_TRIGGER]"}))
+    return BasketballPipelineCfg(
+        robot="g1", env=env, policy=policy, ctrl=ctrl, auto_start=args.auto_start, link_test=args.link_test
+    )
 
 
 def main():
@@ -124,6 +135,10 @@ def main():
         pipeline.prepare(prepare_seconds=args.prepare_seconds)
         step = 0
         while args.steps is None or step < args.steps:
+            if args.link_test and pipeline.started_ns is not None:
+                if (time.perf_counter_ns() - pipeline.started_ns) / 1e9 >= args.test_seconds:
+                    reason = "link_test_complete"
+                    break
             start = time.perf_counter()
             pipeline.step()
             step += 1
@@ -152,6 +167,11 @@ def main():
         finally:
             if trace:
                 trace.close(reason)
+                if args.link_test:
+                    from scripts.analyze_basketball_link import write_report
+
+                    report = write_report(trace.path)
+                    logger.info("Link test report: %s (status=%s)", trace.path / "link_report.json", report["status"])
 
 
 if __name__ == "__main__":

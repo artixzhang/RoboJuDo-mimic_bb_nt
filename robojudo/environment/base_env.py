@@ -4,7 +4,6 @@ import numpy as np
 from box import Box
 
 from robojudo.tools.dof import merge_dof_cfgs
-from robojudo.tools.kinematics import MujocoKinematics
 from robojudo.tools.tool_cfgs import DoFConfig
 from robojudo.utils.rotation import TransformAlignment
 
@@ -18,6 +17,8 @@ class Environment(ABC):
 
         self.kinematics = None
         if self.cfg_env.forward_kinematic is not None:
+            from robojudo.tools.kinematics import MujocoKinematics
+
             self.kinematics = MujocoKinematics(cfg=self.cfg_env.forward_kinematic)
         self.update_with_fk = self.cfg_env.update_with_fk
         self._torso_name = self.cfg_env.torso_name

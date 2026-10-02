@@ -1,114 +1,130 @@
 # G1 篮球 Student 部署
 
 入口：`scripts/run_basketball.py`。默认运行 MuJoCo，只有显式传入 `--real` 才会创建
-`UnitreeCppEnv`。不使用 Python 原生 Unitree SDK。
+`UnitreeCppEnv`。真机路径不导入 MuJoCo / viewer，也不使用 Python 原生 Unitree SDK。
 
-## Sim2sim
+## Prepare、Ready 与 Start
 
-在仓库根目录运行，使用 `-m` 确保加载当前 fork，而非 Conda 中其他目录的 editable 安装：
+默认流程（真机和交互仿真一致）：
 
-```bash
-conda activate robojudo
-python -m scripts.run_basketball --pre_hold 0 --hoop_pos 3.0 0.0 1.8
-```
+1. 启动程序，在吊架支撑下 Prepare：从实测姿态平滑插值到 JSON 初始关节姿态，不运行策略。
+2. Prepare 结束进入 Ready：持续发送初始姿态 PD 目标，不运行策略、不推进 phase、不计 pre-hold 时间。
+   可以在这一阶段放下吊架、调整机体平衡、放球。PD 关节保持不等于主动平衡控制，
+   不会自动将你调整后的关节角保存为新目标；初始深蹲姿态能否站稳需要支撑保护。
+3. 按手柄 **Start** 或键盘 **Enter** 启动策略。Ready 中按 Space/B 也等同于 Start。
+   此刻才开始执行下表的 pre-hold 语义。
 
-机器人从 JSON 的初始 root 位姿、关节姿态生成；篮球默认加载于
-`initial_ball_position_m`，使用自由刚体与碗形手进行接触仿真，没有焊接或轨迹辅助。
-仿真默认立即就绪，开始运行策略并推进 phase 投篮，无需按键。
-
-Prepare 会在启动后自动完成，不需要按键启动。`pre_hold` 从 Prepare 完成时开始计时：
-
-| 参数 | Prepare 完成后 | Space / B 的作用 |
+| 参数 | 按 Start 后的行为 | 后续 Space/B |
 | --- | --- | --- |
-| `--pre_hold 0`（默认） | 立即运行策略并推进 phase，没有保持阶段 | 已自动开始，无须按键 |
-| `--pre_hold -1` | 策略持续推理，phase=0，无限等待 | 立即推进 phase，开始投篮 |
-| `--pre_hold T`，T > 0 | 策略持续推理，phase=0，T 秒后自动投篮 | 提前开始投篮，不再等待 T 秒 |
-| 不传 `--pre_hold` | 等同于 `--pre_hold 0` | 已自动开始，无须按键 |
+| `--pre_hold 0`（默认） | 首个输入 phase=0，此后每步推进，立即投篮 | 无需再次按键 |
+| `--pre_hold -1` | 持续推理并下发策略动作，phase=0，无限等待 | 开始推进 phase |
+| `--pre_hold T`，T > 0 | 持续推理并下发策略动作，phase=0，T 秒后推进 | 提前结束 pre-hold |
 
-`--pre_hold 0` 的首个策略输入仍为 phase=0；该步下发完成后 frame 立即推进，
-下一步为 phase=1/165，不会重复保持 phase=0。无限等待使用 `--pre_hold -1`。
-这是对早期版本参数语义的调整；原先使用 `--pre_hold 0` 等待按键的命令需要改为 `-1`。
-触发起跳不会再进入 Prepare，也不会清空历史。
+Start/Enter 只负责从 Ready 启动；策略已启动后再次按 Start/Enter 无效，结束 pre-hold 用 B/Space。
+第一次按 B/Space 只启动策略，不会在同一步跳过 `-1` 或正数 pre-hold。
+**当前 student 没有训练 pre-hold，实际投篮使用 `--pre_hold 0`。** `-1` 与正数仍运行策略，
+不能用来代替放球阶段的 Ready。
 
-**当前 student 没有训练 pre-hold，应使用 `--pre_hold 0`。** `-1` 和正数模式仅供
-训练过保持阶段的模型使用；锁定 phase=0 并不会让投篮策略变成稳定站立策略。
-
-```bash
-# phase=0 维持 2 秒后自动开始，也可提前按 Space/B
-python -m scripts.run_basketball --pre_hold 2
-
-# 不使用 pre-hold：Prepare 完成后立即推理、投篮
-python -m scripts.run_basketball
-
-# 无限维持 phase=0，等待 Space/B
-python -m scripts.run_basketball --pre_hold -1
-
-# 不加载篮球 / 使用本地手柄
-python -m scripts.run_basketball --pre_hold 0 --no_ball
-python -m scripts.run_basketball --pre_hold -1 --joystick
-
-# 无显示服务器的离线冒烟测试；无 pre-hold，直接投篮
-python -m scripts.run_basketball --headless --pre_hold 0 --steps 200
-```
-
-仿真默认 Prepare 时间为 0，因为模型已经处于导出的初始状态；真机默认 3 秒。
-`--prepare_seconds 3` 可以在仿真中检查原生插值。当前模型在初始姿态仅靠 PD 等待
-3 秒会失稳，因此仿真默认不额外插值等待。所有模式在 Prepare 期间均不运行策略。
+Ready 以 100 Hz 正常滚动实测传感器历史，动作历史只记录实际提交的保持目标。
+按 Start 或结束 pre-hold 都不清空历史；Prepare 结束时才平铺初始化。
+Reset 会重新 Prepare，再回到 Ready 等待 Start。仿真显式 `--auto_start` 是唯一跳过 Ready 的模式；
+真机拒绝该参数。相比旧版本，默认 `--pre_hold 0` 不再在 Prepare 后自动投篮。
 
 | 操作 | 键盘 | 手柄 |
 | --- | --- | --- |
-| 开始投篮 / 提前结束 pre-hold | Space | B |
-| 重置并重新 Prepare | R | Y |
+| 从 Ready 启动策略 | Enter（或 Space） | Start（或 B） |
+| 结束策略 pre-hold | Space | B |
+| 重置并重新 Prepare、等待 Start | R | Y |
 | Emergency Stop，进入 Damping | Esc | A |
 
-急停锁存后不能通过重置恢复驱动，需要退出并重新启动程序。仿真急停后保留窗口并继续
-阻尼仿真，关闭窗口或 Ctrl+C 退出。Prepare 中同样检查急停，且急停优先于投篮/重置。
-重置在仿真中恢复机器人和篮球初始状态；真机只重新平滑进入初始关节姿态。
+急停优先于 Start/投篮/重置，锁存后不能通过 Reset 恢复驱动，需要退出并重新启动。
+Prepare 中同样检查急停。真机急停后退出；仿真继续阻尼并保留窗口。
 
-鼠标左键拖动旋转，右键拖动平移，滚轮缩放；Shift 改变拖动轴。
-相机不强制跟随机体。Space 由 Controller 接管，不再触发 viewer 的暂停功能。
-兼容层处理了 [MuJoCo 3.11 的相机 API 变更](https://mujoco.readthedocs.io/en/stable/changelog.html#version-3-11-0-july-27-2026)。
+## 真机链路测试：直接运行
 
-## 机载部署
-
-以下是完成联调后的投篮命令，Prepare 后立即开始投篮，并非首次通信测试命令。
-仅在 G1 机载工控机执行。远程开发服务器不执行该命令：
+在机载 Conda 环境、仓库根目录执行。将 `eth0` 换成实际通信网卡。
+**此命令会驱动真实电机进入初始姿态，整个测试保持吊架支撑；30 秒结束自动进入阻尼。**
+无需篮球、MuJoCo 或显示会话。
 
 ```bash
-conda activate robojudo
-python -m scripts.run_basketball --real --net_if eth0 --pre_hold 0 --hoop_pos 3.0 0.0 1.8
+conda activate robojudo_artix
+python -m scripts.run_basketball --real --net_if eth0 --no_keyboard \
+  --link_test --test_seconds 30 --pre_hold 0 --log_dir logs/basketball_link
 ```
 
-需要该 Conda 环境中安装 RoboJuDo 的 `unitree_cpp` 扩展（见
-[Unitree 安装说明](unitree_setup.md)），以及项目现有依赖。键盘控制沿用原生 pynput，
-需要可用的显示会话；无显示会话时加 `--no_keyboard`，仅使用 Unitree 手柄
-（沿用 `UnitreeCtrl`）。`--net_if` 是机载机器人通信网卡。
-Kp/Kd、nominal、安全位置范围及频率来自 JSON；C++ 后端 `control_dt` 同步设为 0.01 秒。
-Prepare 使用原生关节插值且不运行 ONNX，完成后读取最新实测状态初始化历史。
-退出/异常沿用 `UnitreeCppEnv.shutdown()`；急停键保持 Esc/A。
+程序启动后自动 Prepare（默认 3 秒），然后打印 `Ready: PD hold only, no inference`。
+按手柄 Start 开始 30 秒计时。期间使用真实状态构造 469 维观测并运行 ONNX、真实 C++ 下发和日志；
+**所有下发目标始终是初始姿态，网络输出只记录，任何 Start/B 都不能切换成投篮模式。**
+推理 phase 正常推进到 1 并继续推理；这是计算/通信负载测试，不评估策略动作效果。
+A 可随时提前阻尼退出，Ctrl+C/异常也执行 shutdown。
 
-## 机载时序评估
+终端打印每次运行的日志目录，退出后自动生成：
 
-Sim2sim 通过后可以进入有保护条件的机载地面联调，但不能据此确认起跳安全。
-本仓库锁定的 `unitree_cpp` commit 为 `222028cdaa79cdd7c7cda6645ebd2b02d201be0c`：
+- `metadata.json`：配置、模型 SHA-256、环境版本及 SDK 路径。
+- `trace.jsonl`：Ready/推理、真实传感器、网络输出、实际 PD 目标及逐步计时。
+- `summary.json`：运行结束原因、时序与 tick 统计。
+- `link_report.json`：自动验证固定目标、全部观测历史、推理负载下的周期/提交耗时和状态重复。
 
-- `DataBuffer` 覆盖最新值，不是不断积压的 FIFO；LowState 订阅初始化的队列长度参数为 1。
-- `step()` 更新目标后直接调用 `LowCommandWriter()`，包含 1.0.3 的立即发送修复。
-- 后台发送线程也会重复发送最后一个目标。在该封装中未见命令过期自动阻尼机制；
-  Python 卡住不等于急停，日志也不是独立看门狗。
+报告 `status` 为 `software_checks_passed`、`issues_found` 或 `incomplete`。
+`software_checks_passed` 只表示本次软件检查通过，不是投篮安全认证；按 A 或 Ctrl+C 提前退出为
+`incomplete`，仍保留数据和报告。`findings` 会列出异常；工作耗时超过 10 ms、提交间隔或 tick
+连续不变达到 20 ms 会报告问题。这些阈值用于定位明显异常，不是硬件延迟的验收标准。
+`timing` 的统计只覆盖按 Start 后的推理阶段；Prepare/Ready 原始记录仍在 trace 中。
 
-依据：[锁定版本的控制器源码](https://github.com/HansZ8/unitree_cpp/blob/222028cdaa79cdd7c7cda6645ebd2b02d201be0c/src/unitree_controller.cpp)、
+也可以对已有目录重新生成并打印报告：
+
+```bash
+python -m scripts.analyze_basketball_link "logs/basketball_link/实际运行目录"
+```
+
+测试覆盖真实状态读取、观测/推理、C++ 提交与持续状态反馈。`read_to_submit_return_ms` 是
+Python 取得状态到提交调用返回的耗时，**不包含此前的传感器/DDS 接收延迟，也不是执行器确认**。
+现有 SDK 接口没有提供可对齐的采集/接收时间戳和执行回执，报告明确列出这些未测项。
+不需要为了这一步在工控机安装 MuJoCo。
+
+## 真机投篮
+
+完成链路检查后，退出测试程序，单独启动投篮模式：
+
+```bash
+python -m scripts.run_basketball --real --net_if eth0 --no_keyboard \
+  --pre_hold 0 --hoop_pos 3.0 0.0 1.8
+```
+
+吊架支撑下 Prepare → Ready 中调整平衡、放球 → 人员离开运动范围后按 Start → 立即投篮。
+Ready 维持 JSON 初始关节目标，不会主动控制浮动基座平衡；防坠支撑与人工放球要考虑此区别。
+需要机载环境安装 RoboJuDo 的 `unitree_cpp` 扩展（见 [Unitree 安装说明](unitree_setup.md)）。
+Kp/Kd、nominal、限位和频率来自 JSON；C++ `control_dt=0.01` 秒。
+无显示会话时使用 `--no_keyboard` 和 Unitree 手柄；需要键盘时去掉此参数。
+
+本仓库锁定的 C++ commit 是 `222028cdaa79cdd7c7cda6645ebd2b02d201be0c`：
+`DataBuffer` 覆盖最新值，LowState 订阅队列长度参数为 1，`step()` 直接调用发送函数。
+后台也会重复最后一个目标；该封装未见命令过期自动阻尼机制，Python 卡住不等于急停。
+30 秒测试退出计时和 A 键处理依赖 Python 循环，并非独立看门狗。
+依据：[控制器源码](https://github.com/HansZ8/unitree_cpp/blob/222028cdaa79cdd7c7cda6645ebd2b02d201be0c/src/unitree_controller.cpp)、
 [数据缓冲实现](https://github.com/HansZ8/unitree_cpp/blob/222028cdaa79cdd7c7cda6645ebd2b02d201be0c/src/unitree_controller.hpp)。
-这说明封装设计消除了特定的软件排队等待，不代表已测得实际机载 DDS/执行器延迟。
-机载 Conda 的实际安装版本和编译来源仍需对应确认，不能仅根据仓库 gitlink 判断。
+机载实际安装版本仍需对应确认，不能仅根据仓库 gitlink 判断。
 
-当前模型没有训练 pre-hold，不能使用 `--pre_hold -1` 代替安全的地面联调。
-先完成不连接机器人的离线计算评估；通信与急停验证应在有支撑条件下使用单独的
-PD 测试流程，不运行该投篮策略。当前投篮入口没有单独的 PD 通信测试模式。
-检查日志中的整步耗时是否持续有余量、周期是否有长尾、tick 是否长期重复、目标与实测关节
-是否明显脱节，再决定是否进入投篮测试。`work_ms < 10` 只是必要的计算预算条件，
-不是端到端执行延迟合格的证明。要覆盖 Python 卡死情形，需要在 C++/硬件侧验证
-独立超时保护及其在跳跃中的处理策略。
+## Sim2sim
+
+```bash
+# 复现人工 Start 流程；Prepare 后等待 Enter/Space
+python -m scripts.run_basketball --pre_hold 0
+
+# 直接预览投篮：仿真专用，跳过 Ready 等待
+python -m scripts.run_basketball --auto_start --pre_hold 0
+
+# 无显示服务器的离线冒烟测试
+python -m scripts.run_basketball --headless --auto_start --pre_hold 0 --steps 200
+```
+
+机器人和篮球使用导出初始位姿，篮球自由接触碗形手，无焊接/轨迹辅助。
+`--no_ball` 不加载篮球；`--joystick` 使用本地手柄。仿真 Prepare 默认 0 秒，真机默认 3 秒；
+可用 `--prepare_seconds` 覆盖。当前初始姿态在仿真中仅靠 PD 等待 3 秒会失稳，
+因此无人支撑的投篮预览用 `--auto_start`。headless 不加它时仅测试 Ready，不会自动推理。
+鼠标左键拖动旋转，右键平移，滚轮缩放；Shift 改变拖动轴，相机不强制跟随。
+Space 由 Controller 接管，不会暂停 viewer；兼容层处理了
+[MuJoCo 3.11 相机 API 变更](https://mujoco.readthedocs.io/en/stable/changelog.html#version-3-11-0-july-27-2026)。
 
 ## 纯文本日志
 
@@ -125,13 +141,14 @@ PD 测试流程，不运行该投篮策略。当前投篮入口没有单独的 P
 python -m scripts.run_basketball --pre_hold 0 --log_dir logs/basketball
 
 # 离线计时对照时关闭详细日志（原有终端运行日志仍保留）
-python -m scripts.run_basketball --headless --pre_hold 0 --steps 200 --no_log
+python -m scripts.run_basketball --headless --auto_start --pre_hold 0 --steps 200 --no_log
 ```
 
 `trace.jsonl` 的 `sample` 记录包括：
 
 - Prepare 的逐步实测状态、插值比例、目标；Ready 时平铺的传感器/动作历史。
-- 完整 469 维观测、29 维未裁剪网络输出 `raw_action`、裁剪后实际提交的 `target`。
+- 完整 469 维观测、网络输出 `raw_action`、策略目标 `policy_target`、实际提交的 `target`。
+- `inference_ran`、`target_source`、`link_test` 区分 Ready、固定 PD 链路测试与策略控制；Ready 网络输出为空。
 - 实测关节角/速度、机体四元数（xyzw）、角速度；真机额外记录估计力矩、IMU 加速度和原始 tick。
 - `mode`、推理使用的 `frame`/`phase`、下发后 `frame_after`、按键及控制器数据。
 - 读取、控制器处理、观测构造、推理、`env.step()` 调用的分项耗时。
@@ -171,8 +188,9 @@ Python 取到该副本的时间。`tick_delta` 与 `unchanged_tick_ms` 用于发
 | `[321:466]` | 5 帧已经提交的裁剪后 target 减 nominal |
 | `[466:469]` | reset 时固化的机体坐标系篮筐向量 |
 
-每步执行 `env.update → 最新观测 → ONNX → clip(nominal + output) → env.step`。
-只有 `env.step` 成功返回后才滚动动作历史并推进 frame。没有动作平滑、额外观测归一化、
+策略启动后每步执行 `env.update → 最新观测 → ONNX → clip(nominal + output) → env.step`。
+Ready 跳过 ONNX，链路测试将策略目标替换为初始 PD 目标。
+只有 `env.step` 成功返回后才滚动动作历史，且只有策略已启动时才推进 frame/pre-hold 计数。没有动作平滑、额外观测归一化、
 观测裁剪或软件延迟队列。控制循环的 sleep 仅用于维持 100 Hz，下一步重新获取最新状态。
 
 Reset 将一次实测状态重复 5 次，将 `initial_pose - nominal` 重复 5 次。
@@ -222,7 +240,7 @@ python -m scripts.benchmark_basketball --warmup 200 --steps 3000 --paced --with_
 先运行带日志的 sim2sim，再验证终端打印的运行目录：
 
 ```bash
-python -m scripts.run_basketball --headless --pre_hold 0 --steps 200
+python -m scripts.run_basketball --headless --auto_start --pre_hold 0 --steps 200
 python -m scripts.verify_basketball_history logs/basketball/<运行目录> --output logs/history_check.json
 ```
 

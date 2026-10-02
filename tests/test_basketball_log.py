@@ -22,7 +22,7 @@ class TextLogTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.cfg = make_config(parse_args(["--headless", "--pre_hold", "-1"]))
+        self.cfg = make_config(parse_args(["--headless", "--auto_start", "--pre_hold", "-1"]))
 
     def rows(self, trace):
         return [json.loads(line) for line in (trace.path / "trace.jsonl").read_text().splitlines()]

@@ -47,7 +47,7 @@ class HistoryAuditTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        cfg = make_config(parse_args(["--headless", "--pre_hold", "-1"]))
+        cfg = make_config(parse_args(["--headless", "--auto_start", "--pre_hold", "-1"]))
         trace = BasketballLog(self.directory.name, cfg, {})
         pipeline = BasketballPipeline(cfg, trace=trace)
         try:

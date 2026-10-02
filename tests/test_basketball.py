@@ -129,7 +129,7 @@ class StudentContractTests(unittest.TestCase):
 
 class SimulationTests(unittest.TestCase):
     def setUp(self):
-        self.pipeline = BasketballPipeline(make_config(parse_args(["--headless", "--pre_hold", "-1"])))
+        self.pipeline = BasketballPipeline(make_config(parse_args(["--headless", "--auto_start", "--pre_hold", "-1"])))
 
     def tearDown(self):
         self.pipeline.env.close()
@@ -188,7 +188,7 @@ class SimulationTests(unittest.TestCase):
                 p.prepare(prepare_seconds=0.02)
         np.testing.assert_array_equal(p.env.stiffness, np.zeros(29))
 
-    def test_zero_prehold_starts_immediately_after_prepare_without_trigger(self):
+    def test_sim_auto_start_skips_ready_wait(self):
         p = self.pipeline
         p.cfg.policy.pre_hold = 0
         with patch.object(p.policy.policy, "get_action", side_effect=AssertionError("Prepare ran policy")):
@@ -215,7 +215,7 @@ class SimulationTests(unittest.TestCase):
         p.step()
         self.assertEqual(p.policy.frame, 1)
 
-    def test_zero_prehold_reset_restarts_immediately(self):
+    def test_sim_auto_start_reset_restarts_immediately(self):
         p = self.pipeline
         p.cfg.policy.pre_hold = 0
         p.prepare(prepare_seconds=0)
@@ -242,7 +242,7 @@ class SimulationTests(unittest.TestCase):
     def test_no_ball_scene(self):
         from robojudo.environment.basketball_mujoco_env import BasketballMujocoEnv
 
-        cfg = make_config(parse_args(["--headless", "--no_ball"]))
+        cfg = make_config(parse_args(["--headless", "--auto_start", "--no_ball"]))
         env = BasketballMujocoEnv(cfg.env)
         try:
             self.assertEqual(env.model.nq, 36)
