@@ -201,6 +201,7 @@
     "layout": "field_major",
     "history_order": "oldest_to_newest",
     "preprocessing": "multiply each field by its scale; no other normalization or input clipping",
+    "sensor_delay_steps": 1,
     "fields": [
       {
         "name": "phase",
@@ -258,13 +259,16 @@
         "scale": 0.25,
         "source": "R_world_from_pelvis_at_reset.T @ (hoop_center_world - pelvis_position_world_at_reset); xyz, frozen until reset"
       }
-    ]
+    ],
+    "timing": "sample before inference; only sensor histories have sensor_delay_steps; phase and applied-target history use the current tick"
   },
   "action": {
     "unit": "rad",
     "output": "joint_position_offset_from_nominal",
     "target": "clip(nominal_joint_position + network_output, safe_lower_joint_position, safe_upper_joint_position)",
-    "delay_steps": 0
+    "delay_steps": 0,
+    "timing": "clip before action delay; pad delay queue with the actual initial PD target; match total latency without duplicating hardware delay",
+    "pd": "tau = pd_stiffness * (target - measured_q) - pd_damping * measured_qdot"
   },
   "phase": {
     "pre_hold_s": 5.0,
@@ -333,5 +337,12 @@
     "sensor_history": "repeat the first measured gravity, angular velocity, q-minus-nominal and qdot into all sensor slots, including delay padding",
     "action_history": "repeat the actual initial applied PD target minus nominal into all action slots; the training target is the clipped initial reference pose",
     "hoop": "capture the hoop-center vector in the initial pelvis frame once at reset"
+  },
+  "export_source": {
+    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v1/2026-09-30_13-23-24/model_1000.pt",
+    "file": "model_1000.pt",
+    "size_bytes": 4925301,
+    "sha256": "8a9936d00fcf196cc086741d2f65f7f043cfa41cc12da63383c24e1bf446728d",
+    "iteration": 1000
   }
 }
