@@ -178,16 +178,16 @@
     2.0,
     2.0,
     2.0,
-    1.0,
-    0.5,
-    0.5,
+    0.800000011920929,
+    0.4000000059604645,
+    0.4000000059604645,
     2.0,
     2.0,
     2.0,
     2.0,
-    1.0,
-    0.5,
-    0.5
+    0.800000011920929,
+    0.4000000059604645,
+    0.4000000059604645
   ],
   "policy_hz": 100.0,
   "student_hidden_dims": [
@@ -339,10 +339,10 @@
     "hoop": "capture the hoop-center vector in the initial pelvis frame once at reset"
   },
   "export_source": {
-    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v1/2026-10-06_14-35-12/model_1000.pt",
+    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v1/2026-09-30_13-23-24/model_1000.pt",
     "file": "model_1000.pt",
-    "size_bytes": 4920181,
-    "sha256": "ef12e1aac731b987d5973c5570a6fcb82a3bbfcc6262ff0cc411fbed24ebc589",
+    "size_bytes": 4925301,
+    "sha256": "8a9936d00fcf196cc086741d2f65f7f043cfa41cc12da63383c24e1bf446728d",
     "iteration": 1000
   }
 }
