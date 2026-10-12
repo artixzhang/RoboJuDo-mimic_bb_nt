@@ -34,13 +34,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--real", action="store_true", help="On-board only: use UnitreeCppEnv")
     parser.add_argument("--net_if", default="eth0")
-    parser.add_argument("--hoop_pos", type=float, nargs=3, default=[3.0, 0.0, 1.8], metavar=("X", "Y", "Z"))
-    parser.add_argument(
-        "--pre_hold",
-        type=float,
-        default=0.0,
-        help="After Start: 0 advances phase immediately; -1 waits for Space/B; positive holds phase=0 for seconds",
-    )
+    parser.add_argument("--hoop_pos", type=float, nargs=3, default=[3.0, 0.0, 1.8], metavar=("R", "THETA", "Z"))
     parser.add_argument("--auto_start", action="store_true", help="Simulation only: skip the Ready button wait")
     parser.add_argument("--link_test", action="store_true", help="Run inference but submit only the initial PD pose")
     parser.add_argument(
@@ -52,6 +46,11 @@ def parse_args(argv=None):
     parser.add_argument("--no_ball", action="store_true", help="Preview without basketball")
     parser.add_argument("--joystick", action="store_true", help="Use a local gamepad in simulation")
     parser.add_argument("--no_keyboard", action="store_true", help="Use only the gamepad (no display session needed)")
+    parser.add_argument(
+        "--terminal_keyboard",
+        action="store_true",
+        help="Read keyboard from the terminal, including SSH; no display needed",
+    )
     parser.add_argument("--headless", action="store_true", help="Simulation without viewer or keyboard")
     parser.add_argument("--steps", type=int, help="Stop after this many simulation steps (offline smoke test)")
     parser.add_argument(
@@ -59,8 +58,8 @@ def parse_args(argv=None):
     )
     parser.add_argument("--no_log", action="store_true", help="Disable detailed recording for timing comparisons")
     args = parser.parse_args(argv)
-    if not math.isfinite(args.pre_hold) or (args.pre_hold < 0 and args.pre_hold != -1):
-        parser.error("--pre_hold must be -1 (manual trigger), 0 (immediate), or a positive duration")
+    if args.terminal_keyboard and args.no_keyboard:
+        parser.error("--terminal_keyboard and --no_keyboard cannot be combined")
     if args.real and (args.headless or args.steps is not None):
         parser.error("--headless and --steps are simulation-only")
     if args.real and args.auto_start:
@@ -69,13 +68,25 @@ def parse_args(argv=None):
         parser.error("--link_test requires logging and a positive --test_seconds")
     if args.steps is not None and args.steps <= 0:
         parser.error("--steps must be positive")
-    if not all(math.isfinite(x) for x in args.hoop_pos):
-        parser.error("--hoop_pos must be finite")
+    if not all(math.isfinite(x) for x in args.hoop_pos) or args.hoop_pos[0] < 0:
+        parser.error("--hoop_pos requires finite r theta z with r >= 0")
     return args
 
 
+def gamepad_triggers(stop_button):
+    return {
+        stop_button: "[SHUTDOWN]",
+        "Start": "[POLICY_START]",
+        "Y": "[MOTION_RESET]",
+        **{
+            f"R2+{button}": f"[SKILL_{i}]"
+            for i, button in enumerate(("A", "B", "X", "Y", "Up", "Down", "Left", "Right"))
+        },
+    }
+
+
 def make_config(args):
-    policy = load_student_config(args.config, model_path=args.model, hoop_pos=args.hoop_pos, pre_hold=args.pre_hold)
+    policy = load_student_config(args.config, model_path=args.model, hoop_pos=args.hoop_pos)
     if set(policy.action_dof.joint_names) != set(G1_29DoF().joint_names):
         raise ValueError("Student joint_names must contain exactly the 29 G1 joints")
     # Environment stays in SDK motor order; adapters map the JSON policy order by name.
@@ -84,11 +95,18 @@ def make_config(args):
     common = dict(xml=xml, dof=dof, forward_kinematic=None, update_with_fk=False, born_place_align=False)
     ctrl = (
         []
-        if args.headless or args.no_keyboard
+        if (args.headless and not args.terminal_keyboard) or args.no_keyboard
         else [
             KeyboardCtrlCfg(
+                ctrl_type="TerminalKeyboardCtrl" if args.terminal_keyboard else "KeyboardCtrl",
                 trigger_on_press=True,
-                triggers_extra={"Key.enter": "[POLICY_START]", "Key.space": "[SHOT_TRIGGER]", "r": "[MOTION_RESET]"},
+                hoop_input=True,
+                triggers={
+                    "Key.esc": "[SHUTDOWN]",
+                    "Key.enter": "[POLICY_START]",
+                    "r": "[MOTION_RESET]",
+                    **{str(i + 1): f"[SKILL_{i}]" for i in range(6)},
+                },
             )
         ]
     )
@@ -99,7 +117,7 @@ def make_config(args):
             odometry_type="DUMMY",
             unitree=G1UnitreeCfg(net_if=args.net_if, enable_odometry=False, control_dt=1 / policy.freq),
         )
-        ctrl.append(UnitreeCtrlCfg(triggers_extra={"Start": "[POLICY_START]", "B": "[SHOT_TRIGGER]"}))
+        ctrl.append(UnitreeCtrlCfg(combination_init_buttons=["R2"], triggers=gamepad_triggers("Select")))
     else:
         from robojudo.environment.basketball_mujoco_env import BasketballMujocoEnvCfg
 
@@ -112,11 +130,17 @@ def make_config(args):
             sim_dt=sim_dt,
             sim_decimation=decimation,
             headless=args.headless,
-            initial_profile=policy.student["phase"]["motion_profiles"][0],
+            initial_profile={
+                "initial_joint_position_rad": policy.student["initial_pose"],
+                # Simulation-only defaults: the new export contains no root or ball pose.
+                "initial_root_position_m": [0.0, 0.0, 0.75],
+                "initial_root_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "initial_ball_position_m": [0.3, 0.0, 0.85],
+            },
             ball_xml=None if args.no_ball else str(ASSETS_DIR / "objects/basketball.xml"),
         )
         if args.joystick:
-            ctrl.append(JoystickCtrlCfg(triggers_extra={"Start": "[POLICY_START]", "B": "[SHOT_TRIGGER]"}))
+            ctrl.append(JoystickCtrlCfg(combination_init_buttons=["R2"], triggers=gamepad_triggers("Back")))
     return BasketballPipelineCfg(
         robot="g1", env=env, policy=policy, ctrl=ctrl, auto_start=args.auto_start, link_test=args.link_test
     )
@@ -148,7 +172,7 @@ def main():
             remaining = pipeline.dt - (time.perf_counter() - start)
             if remaining > 0:
                 time.sleep(remaining)  # Rate pacing only; no sensor/action delay queue.
-        logger.info("Finished %d steps; reference frame %.1f", step, pipeline.policy.frame)
+        logger.info("Finished %d steps; command ID %d", step, pipeline.policy.command_id)
     except KeyboardInterrupt:
         reason = "keyboard_interrupt"
     except BaseException as exc:
@@ -159,9 +183,12 @@ def main():
     finally:
         try:
             if pipeline is not None:
-                pipeline.env.shutdown()
-                if not args.real:
-                    pipeline.env.close()
+                try:
+                    pipeline.env.shutdown()
+                    if not args.real:
+                        pipeline.env.close()
+                finally:
+                    pipeline.close_controllers()
                 if trace:
                     trace.event("shutdown_complete")
         finally:

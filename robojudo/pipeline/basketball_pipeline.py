@@ -1,6 +1,7 @@
-"""Prepare -> ready/pre-hold -> shot -> indefinite post-hold."""
+"""Prepare -> Ready -> runtime skill control."""
 
 import logging
+import sys
 import time
 from importlib import import_module
 
@@ -29,7 +30,9 @@ class BasketballPipeline(RlPipeline):
             try:
                 import_module("robojudo.controller.keyboard_ctrl")
             except ImportError as exc:
-                raise RuntimeError("Keyboard unavailable. For SSH/headless deployment, add --no_keyboard.") from exc
+                raise RuntimeError("Keyboard unavailable. Use --terminal_keyboard for SSH, or --no_keyboard.") from exc
+        if any(controller.ctrl_type == "TerminalKeyboardCtrl" for controller in cfg.ctrl) and not sys.stdin.isatty():
+            raise RuntimeError("--terminal_keyboard requires an interactive TTY (SSH: use ssh -t)")
         try:
             super().__init__(cfg)
         except BaseException:
@@ -44,7 +47,15 @@ class BasketballPipeline(RlPipeline):
                 else:
                     if self.trace:
                         self.trace.event("shutdown_complete", stage="initialization")
+            self.close_controllers()
             raise
+
+    def close_controllers(self):
+        if hasattr(self, "ctrl_manager"):
+            for controller in self.ctrl_manager.controllers.values():
+                close = getattr(controller.inst, "close", None)
+                if close is not None:
+                    close()
 
     def self_check(self):
         # Do not run policy dry steps before Prepare has provided a real s_0.
@@ -89,23 +100,17 @@ class BasketballPipeline(RlPipeline):
         if self.cfg.auto_start:
             self.start_policy()
         else:
-            logger.info("Ready: PD hold only, no inference. Press Start/Enter or Space/B to start policy")
+            logger.info("Ready: PD hold only, no inference. Press Start/Enter to start the default skill")
         if self.cfg.link_test:
             logger.warning("LINK TEST: inference outputs are logged ONLY; every submitted target stays at initial pose")
-        logger.info("Esc / A enters damping in every stage")
+        logger.info("Esc / Select (local Back) enters damping in every stage")
 
     def start_policy(self):
         self.started = True
         self.started_ns = time.perf_counter_ns()
         if self.trace:
-            self.trace.event("policy_start", frame=self.policy.frame, link_test=self.cfg.link_test)
-        pre_hold = self.cfg.policy.pre_hold
-        if pre_hold == 0:
-            logger.info("Policy started: advancing phase immediately, without pre-hold")
-        elif pre_hold == -1:
-            logger.info("Pre-hold: policy running at phase=0; waiting for Space / B to start the shot")
-        else:
-            logger.info("Pre-hold: policy running at phase=0 for %.2fs; Space / B can start the shot early", pre_hold)
+            self.trace.event("policy_start", command_id=self.policy.command_id, link_test=self.cfg.link_test)
+        logger.info("Policy started: %s", self.policy.labels[self.policy.command_id])
 
     def step(self, dry_run=False):
         if not self.ready:
@@ -148,25 +153,35 @@ class BasketballPipeline(RlPipeline):
                 self.env.reborn()
             self.prepare(prepare_seconds=self._prepare_seconds)
             return
-        if not self.started and ("[POLICY_START]" in commands or "[SHOT_TRIGGER]" in commands):
+        # Controller events are applied at tick boundaries; inference never waits for text input.
+        for data in ctrl_data.values():
+            if isinstance(data, dict) and "hoop_pos_cyl" in data:
+                try:
+                    self.policy.update_hoop(data["hoop_pos_cyl"])
+                except ValueError as exc:
+                    logger.warning("Hoop update rejected: %s", exc)
+                    continue
+                logger.info("Hoop updated [r, theta, z]: %s", self.policy.hoop_pos)
+                if self.trace:
+                    self.trace.event("hoop_update", hoop_pos_cyl=self.policy.hoop_pos)
+        skill_commands = sorted(set(c for c in commands if c.startswith("[SKILL_")))
+        if len(skill_commands) > 1:
+            logger.warning("Conflicting skill inputs ignored: %s", skill_commands)
+        elif skill_commands:
+            command_id = int(skill_commands[0][7:-1])
+            try:
+                self.policy.set_command(command_id)
+            except ValueError as exc:
+                logger.warning("%s", exc)
+            else:
+                logger.info("Selected skill %d: %s", command_id, self.policy.labels[command_id])
+                if self.trace:
+                    self.trace.event("skill_update", command_id=command_id)
+        if not self.started and "[POLICY_START]" in commands:
             self.start_policy()
-        elif self.started and "[SHOT_TRIGGER]" in commands:
-            self.policy.trigger()
-            if self.trace:
-                self.trace.event("shot_trigger", frame=self.policy.frame)
-
-        frame = self.policy.frame
-        mode = (
-            "ready"
-            if not self.started
-            else (
-                "post_hold"
-                if frame >= self.policy.profile["frame_count"] - 1
-                else ("active" if self.policy.active else "pre_hold")
-            )
-        )
+        mode = "active" if self.started else "ready"
         if self.trace and mode != self._last_logged_mode:
-            self.trace.event("mode", mode=mode, frame=frame)
+            self.trace.event("mode", mode=mode)
             self._last_logged_mode = mode
         obs_start = time.perf_counter_ns()
         obs, extras = self.policy.get_observation(env_data, ctrl_data)
@@ -205,9 +220,8 @@ class BasketballPipeline(RlPipeline):
                     "submit_ms": (submit_end - submit_start) / 1e6,
                 },
                 mode=mode,
-                frame=frame,
-                frame_after=self.policy.frame,
-                phase=frame / (self.policy.profile["frame_count"] - 1),
+                command_id=self.policy.command_id,
+                hoop_pos_cyl=self.policy.hoop_pos,
                 observation=obs,
                 raw_action=self.policy.raw_action if self.started else None,
                 policy_target=policy_target,

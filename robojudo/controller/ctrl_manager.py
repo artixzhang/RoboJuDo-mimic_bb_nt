@@ -30,8 +30,15 @@ class CtrlManager:
                 logger.warning(f"Controller type {ctrl_type} already exists, skipping.")
                 continue
 
-            ctrl_class: type[Controller] = getattr(robojudo.controller, ctrl_type)
-            controller: Controller = ctrl_class(cfg_ctrl=cfg_ctrl, env=self.env, device=self.device)
+            try:
+                ctrl_class: type[Controller] = getattr(robojudo.controller, ctrl_type)
+                controller: Controller = ctrl_class(cfg_ctrl=cfg_ctrl, env=self.env, device=self.device)
+            except BaseException:
+                for previous in controllers.values():
+                    close = getattr(previous["inst"], "close", None)
+                    if close is not None:
+                        close()
+                raise
             controllers[ctrl_type] = {
                 "inst": controller,
                 "cfg": cfg_ctrl,

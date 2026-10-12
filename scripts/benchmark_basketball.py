@@ -34,7 +34,7 @@ def statistics(values, budget_ms):
 
 def initial_state(policy):
     return Box(
-        base_quat=np.asarray(policy.profile["initial_root_quaternion_wxyz"], dtype=np.float32)[[1, 2, 3, 0]],
+        base_quat=np.asarray([0, 0, 0, 1], dtype=np.float32),
         base_ang_vel=np.zeros(3, dtype=np.float32),
         dof_pos=policy.initial_pos.copy(),
         dof_vel=np.zeros(29, dtype=np.float32),
@@ -42,13 +42,13 @@ def initial_state(policy):
 
 
 def benchmark(args):
-    cfg = load_student_config(args.config, model_path=args.model, pre_hold=0)
+    cfg = load_student_config(args.config, model_path=args.model)
     loaded = time.perf_counter_ns()
     policy = MimicBBPolicy(cfg)
     load_ms = (time.perf_counter_ns() - loaded) / 1e6
     state = initial_state(policy)
     policy.reset_from_state(state)
-    # Sweep phase even for synthetic inputs; never interpret these as a physics rollout.
+    # Sweep skills even for synthetic inputs; never interpret these as a physics rollout.
     observations = []
     if args.trace:
         with Path(args.trace).open() as stream:
@@ -59,10 +59,10 @@ def benchmark(args):
         if not observations:
             raise ValueError("Trace contains no control observations")
     else:
-        for frame in range(policy.profile["frame_count"]):
-            policy.frame = frame
+        for command_id in range(policy.dimension):
+            policy.set_command(command_id)
             observations.append(policy.get_observation(state, {})[0].copy())
-    batches = [obs.reshape(1, 469) for obs in observations]
+    batches = [obs.reshape(1, cfg.student["observation_dim"]) for obs in observations]
     session = policy.model
 
     def infer(batch):
@@ -91,8 +91,6 @@ def benchmark(args):
         trace.event("offline_benchmark", note="Synthetic states and virtual action history; no targets are sent")
 
     def compute():
-        if policy.frame >= policy.profile["frame_count"] - 1:
-            policy.reset_from_state(state)
         obs, _ = policy.get_observation(state, {})
         target = policy.get_action(obs) + policy.default_pos
         # Virtual feedback only, to exercise the deployment history code off robot.
@@ -108,7 +106,7 @@ def benchmark(args):
                 observation=obs,
                 raw_action=policy.raw_action,
                 submitted=False,
-                frame_after=policy.frame,
+                command_id=policy.command_id,
             )
         return target
 
@@ -142,7 +140,7 @@ def benchmark(args):
         "model_sha256": hashlib.sha256(Path(cfg.policy_file).read_bytes()).hexdigest(),
         "providers": session.get_providers(),
         "ort_threads": 1,
-        "onnx_input_source": str(args.trace) if args.trace else "synthetic_initial_pose_phase_sweep",
+        "onnx_input_source": str(args.trace) if args.trace else "synthetic_initial_pose_skill_sweep",
         "compute_input_source": "synthetic_initial_pose_with_virtual_action_history",
         "warmup": args.warmup,
         "paced_compute": args.paced,

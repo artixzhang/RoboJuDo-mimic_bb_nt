@@ -47,14 +47,14 @@ class HistoryAuditTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        cfg = make_config(parse_args(["--headless", "--auto_start", "--pre_hold", "-1"]))
+        cfg = make_config(parse_args(["--headless", "--auto_start"]))
         trace = BasketballLog(self.directory.name, cfg, {})
         pipeline = BasketballPipeline(cfg, trace=trace)
         try:
             pipeline.prepare(prepare_seconds=0)
             for _ in range(6):
                 pipeline.step()
-            pipeline.ctrl_manager.get_ctrl_data = Mock(return_value=Box(COMMANDS=["[SHOT_TRIGGER]"]))
+            pipeline.ctrl_manager.get_ctrl_data = Mock(return_value=Box(COMMANDS=["[SKILL_1]"]))
             pipeline.step()
             pipeline.ctrl_manager.get_ctrl_data.return_value = Box(COMMANDS=[])
             for _ in range(6):
@@ -83,7 +83,7 @@ class HistoryAuditTests(unittest.TestCase):
 
     def test_detects_reversed_sensor_window(self):
         obs = self.controls[7]["observation"]
-        obs[31:176] = np.asarray(obs[31:176]).reshape(5, 29)[::-1].ravel().tolist()
+        obs[33:178] = np.asarray(obs[33:178]).reshape(5, 29)[::-1].ravel().tolist()
         self.write_rows()
         report = verify(self.path)
         self.assertFalse(report["history_ok"])
@@ -93,10 +93,10 @@ class HistoryAuditTests(unittest.TestCase):
         metadata = json.loads((self.path / "metadata.json").read_text())
         student = metadata["config"]["policy"]["student"]
         order = [metadata["env_joint_names"].index(name) for name in student["joint_names"]]
-        scale = next(f["scale"] for f in student["observation"]["fields"] if f["start"] == 321)
+        scale = next(f["scale"] for f in student["observation"]["fields"] if f["start"] == 323)
         row = self.controls[7]
         current = (np.asarray(row["target"])[order] - student["nominal_joint_position"]) * scale
-        row["observation"][321:466] = row["observation"][350:466] + current.tolist()
+        row["observation"][323:468] = row["observation"][352:468] + current.tolist()
         self.write_rows()
         report = verify(self.path)
         self.assertFalse(report["history_ok"])
@@ -105,12 +105,12 @@ class HistoryAuditTests(unittest.TestCase):
     def test_detects_broken_reset_and_scale(self):
         reset = next(row for row in self.rows if row.get("event") == "prepare_complete")
         reset["sensor_history"] = np.zeros((5, 64)).tolist()
-        self.controls[0]["observation"][466:469] = [3, 0, 1.8]
+        self.controls[0]["observation"][468:471] = [3, 0, 1.8]
         self.write_rows()
         report = verify(self.path)
         self.assertFalse(report["history_ok"])
         fields = {error["field"] for error in report["first_errors"]}
-        self.assertTrue({"reset.sensor_history", "initial_hoop_position_b"} <= fields)
+        self.assertTrue({"reset.sensor_history", "hoop_pos_cyl"} <= fields)
 
 
 if __name__ == "__main__":

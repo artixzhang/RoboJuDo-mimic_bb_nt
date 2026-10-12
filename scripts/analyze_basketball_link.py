@@ -29,7 +29,7 @@ def analyze(directory):
     summary = json.loads((directory / "summary.json").read_text())
     cfg = metadata["config"]
     student = cfg["policy"]["student"]
-    initial = student["phase"]["motion_profiles"][0]["initial_joint_position_rad"]
+    initial = student["initial_pose"]
     indices = [student["joint_names"].index(name) for name in metadata["env_joint_names"]]
     target = np.asarray(initial)[indices]
     budget = 1000 / student["policy_hz"]

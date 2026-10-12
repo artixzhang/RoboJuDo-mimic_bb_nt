@@ -114,6 +114,7 @@ class JoystickThread(Thread):
         invert = set(axis_config.get("invert", []))
 
         clock = pygame.time.Clock()
+        r2_pressed = False
         last_state_time = time.time()
         state_interval = 1.0 / 100  # 100Hz
 
@@ -134,6 +135,13 @@ class JoystickThread(Thread):
                             "timestamp": now,
                         }
                     )
+
+                elif event.type == pygame.JOYAXISMOTION and event.axis == axis_map.get("RT"):
+                    value = self.normalize_axis(axis_range, "RT", event.value)
+                    pressed = value > (0.4 if r2_pressed else 0.6)
+                    if pressed != r2_pressed:
+                        r2_pressed = pressed
+                        self.event_queue.put({"type": "button", "name": "R2", "pressed": pressed, "timestamp": now})
 
                 elif event.type == pygame.JOYHATMOTION:
                     if dpad_as_button:

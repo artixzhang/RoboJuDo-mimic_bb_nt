@@ -1,8 +1,8 @@
 {
-  "format": "bb_mimic_nt_student_v2",
-  "observation_dim": 469,
+  "observation_dim": 471,
   "action_dim": 29,
   "history_length": 5,
+  "command_dimension": 3,
   "joint_names": [
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
@@ -178,16 +178,16 @@
     2.0,
     2.0,
     2.0,
-    0.800000011920929,
-    0.4000000059604645,
-    0.4000000059604645,
+    1.0,
+    0.5,
+    0.5,
     2.0,
     2.0,
     2.0,
     2.0,
-    0.800000011920929,
-    0.4000000059604645,
-    0.4000000059604645
+    1.0,
+    0.5,
+    0.5
   ],
   "policy_hz": 100.0,
   "student_hidden_dims": [
@@ -196,153 +196,236 @@
     128
   ],
   "activation": "elu",
+  "model": {
+    "file": "student_policy.onnx",
+    "input": {
+      "name": "student_observation",
+      "dtype": "float32",
+      "shape": [
+        null,
+        471
+      ]
+    },
+    "output": {
+      "name": "joint_position_offset",
+      "dtype": "float32",
+      "shape": [
+        null,
+        29
+      ]
+    }
+  },
   "observation": {
     "dtype": "float32",
     "layout": "field_major",
     "history_order": "oldest_to_newest",
     "preprocessing": "multiply each field by its scale; no other normalization or input clipping",
-    "sensor_delay_steps": 1,
     "fields": [
       {
-        "name": "phase",
+        "name": "skill_command",
         "start": 0,
-        "stop": 1,
+        "stop": 3,
         "unit": "dimensionless",
         "scale": 1.0,
-        "source": "frame / (frame_count - 1)"
+        "source": "one_hot(command_id, command_dimension); runtime skill selection",
+        "frame_size": 3,
+        "history_length": 1
       },
       {
         "name": "projected_gravity_history",
-        "start": 1,
-        "stop": 16,
+        "start": 3,
+        "stop": 18,
         "unit": "dimensionless",
         "scale": 1.0,
-        "source": "R_world_from_pelvis.T @ [0, 0, -1]; xyz direction, not acceleration"
+        "source": "R_world_from_pelvis.T @ [0, 0, -1]; xyz direction, not acceleration",
+        "frame_size": 3,
+        "history_length": 5
       },
       {
         "name": "pelvis_angular_velocity_history",
-        "start": 16,
-        "stop": 31,
+        "start": 18,
+        "stop": 33,
         "unit": "rad/s",
         "scale": 0.25,
-        "source": "pelvis-frame angular velocity; xyz"
+        "source": "pelvis-frame angular velocity; xyz",
+        "frame_size": 3,
+        "history_length": 5
       },
       {
         "name": "joint_position_offset_history",
-        "start": 31,
-        "stop": 176,
+        "start": 33,
+        "stop": 178,
         "unit": "rad",
         "scale": 1.0,
-        "source": "measured joint position - nominal_joint_position; joint_names order"
+        "source": "measured joint position - nominal_joint_position; joint_names order",
+        "frame_size": 29,
+        "history_length": 5
       },
       {
         "name": "joint_velocity_history",
-        "start": 176,
-        "stop": 321,
+        "start": 178,
+        "stop": 323,
         "unit": "rad/s",
         "scale": 0.05,
-        "source": "measured joint velocity; joint_names order"
+        "source": "measured joint velocity; joint_names order",
+        "frame_size": 29,
+        "history_length": 5
       },
       {
         "name": "applied_action_offset_history",
-        "start": 321,
-        "stop": 466,
+        "start": 323,
+        "stop": 468,
         "unit": "rad",
         "scale": 1.0,
-        "source": "PD target actually applied after position clipping and action delay - nominal_joint_position; joint_names order"
+        "source": "PD target actually applied after position clipping - nominal_joint_position; joint_names order",
+        "frame_size": 29,
+        "history_length": 5
       },
       {
-        "name": "initial_hoop_position_b",
-        "start": 466,
-        "stop": 469,
-        "unit": "m",
-        "scale": 0.25,
-        "source": "R_world_from_pelvis_at_reset.T @ (hoop_center_world - pelvis_position_world_at_reset); xyz, frozen until reset"
+        "name": "hoop_pos_cyl",
+        "start": 468,
+        "stop": 471,
+        "unit": "m, rad, m",
+        "scale": [
+          0.25,
+          2.0,
+          0.25
+        ],
+        "source": "external hoop_pos_cyl parameter; [r, theta, z]; update between shots, hold during a shot",
+        "frame_size": 3,
+        "history_length": 1
       }
     ],
-    "timing": "sample before inference; only sensor histories have sensor_delay_steps; phase and applied-target history use the current tick"
+    "timing": "sample current sensors before inference; skill command and applied-target history use the current tick"
   },
   "action": {
     "unit": "rad",
     "output": "joint_position_offset_from_nominal",
     "target": "clip(nominal_joint_position + network_output, safe_lower_joint_position, safe_upper_joint_position)",
-    "delay_steps": 0,
-    "timing": "clip before action delay; pad delay queue with the actual initial PD target; match total latency without duplicating hardware delay",
+    "timing": "apply position-clipped target immediately after inference",
     "pd": "tau = pd_stiffness * (target - measured_q) - pd_damping * measured_qdot"
   },
-  "phase": {
-    "pre_hold_s": 5.0,
-    "post_hold_s": 5.0,
-    "ready": "phase=0; update histories continuously; trigger ACTIVE without resetting histories or frozen hoop position",
-    "active": "infer, submit target, then frame=min(frame + reference_fps / policy_hz, frame_count - 1); phase=frame / (frame_count - 1)",
-    "final": "phase=1 for post_hold_s, then hand control to the hardware controller",
-    "motion_profiles": [
+  "skills": {
+    "command": {
+      "dimension": 3,
+      "encoding": "one_hot",
+      "switching": "runtime_preserve_history",
+      "labels": [
+        "hold",
+        "shoot",
+        "stand_to_hold"
+      ],
+      "valid_ids": [
+        0,
+        1,
+        2
+      ]
+    },
+    "definitions": [
       {
-        "clip_id": 0,
-        "frame_count": 166,
-        "reference_fps": 100.0,
-        "initial_joint_position_rad": [
-          -0.010984600521624088,
-          0.26396358013153076,
-          0.21357877552509308,
-          0.6885383725166321,
-          -0.3766309916973114,
-          -0.14848138391971588,
-          -0.1083688884973526,
-          -0.13959810137748718,
-          -0.07978431135416031,
-          0.6514622569084167,
-          -0.25366708636283875,
-          0.15148146450519562,
-          0.031917452812194824,
-          0.08703278750181198,
-          0.42859166860580444,
-          -0.2033156007528305,
-          0.30519965291023254,
-          -0.8689091205596924,
-          0.16780321300029755,
-          -0.9856517314910889,
-          -0.023483820259571075,
-          0.6335473656654358,
-          0.18872536718845367,
-          -0.26484397053718567,
-          0.500438392162323,
-          0.15777409076690674,
-          -0.3058364987373352,
-          -0.33857110142707825,
-          -0.9878485202789307
-        ],
-        "initial_root_position_m": [
-          -0.031021330505609512,
-          0.00391762750223279,
-          0.7536566853523254
-        ],
-        "initial_root_quaternion_wxyz": [
-          0.991379976272583,
-          -0.020992424339056015,
-          -0.12052229791879654,
-          -0.04689871892333031
-        ],
-        "initial_ball_position_m": [
-          0.22733564674854279,
-          -0.07139549404382706,
-          0.7278086543083191
-        ],
-        "initial_ball_controlled": true
+        "name": "hold",
+        "command_id": 0,
+        "object": {
+          "interaction_enabled": true
+        },
+        "end": {
+          "duration_s": [
+            2.0,
+            8.0
+          ],
+          "trigger_probability": 1.0,
+          "object_interaction_enabled": true
+        },
+        "command_one_hot": [
+          1.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "name": "shoot",
+        "command_id": 1,
+        "object": {
+          "interaction_enabled": true
+        },
+        "end": {
+          "duration_s": [
+            2.0,
+            8.0
+          ],
+          "trigger_probability": 0.1,
+          "object_interaction_enabled": false
+        },
+        "command_one_hot": [
+          0.0,
+          1.0,
+          0.0
+        ]
+      },
+      {
+        "name": "stand_to_hold",
+        "command_id": 2,
+        "object": {
+          "interaction_enabled": false
+        },
+        "end": {
+          "duration_s": [
+            2.0,
+            8.0
+          ],
+          "trigger_probability": 0.1,
+          "object_interaction_enabled": false
+        },
+        "command_one_hot": [
+          0.0,
+          0.0,
+          1.0
+        ]
       }
     ]
   },
+  "default_skill": "hold",
+  "initial_pose": [
+    -0.3704213500022888,
+    0.10856692492961884,
+    0.05730557069182396,
+    0.6306537985801697,
+    -0.27006104588508606,
+    -0.05831145495176315,
+    -0.3202948570251465,
+    -0.08093520253896713,
+    -0.2214108556509018,
+    0.6288576126098633,
+    -0.3173757493495941,
+    -0.025379450991749763,
+    -0.01066184788942337,
+    0.009965740144252777,
+    0.18880434334278107,
+    -0.24773578345775604,
+    0.3896220922470093,
+    -0.6099291443824768,
+    0.17819926142692566,
+    -0.6435762047767639,
+    0.285324364900589,
+    0.38053861260414124,
+    -0.06470412760972977,
+    -0.31949862837791443,
+    0.6665179133415222,
+    0.2675773799419403,
+    0.3587164580821991,
+    -0.21867352724075317,
+    -0.6444389224052429
+  ],
   "initialization": {
-    "startup": "use the hardware startup controller to reach the selected profile pose and ball condition; nominal is the offset origin, not the startup pose",
-    "sensor_history": "repeat the first measured gravity, angular velocity, q-minus-nominal and qdot into all sensor slots, including delay padding",
-    "action_history": "repeat the actual initial applied PD target minus nominal into all action slots; the training target is the clipped initial reference pose",
-    "hoop": "capture the hoop-center vector in the initial pelvis frame once at reset"
+    "startup": "reach initial_pose (rad, joint_names order), then run default_skill",
+    "sensor_history": "repeat first measured gravity, gyro, q-minus-nominal and qdot",
+    "action_history": "repeat actual initial applied PD target minus nominal; retain histories across skill and hoop updates"
   },
   "export_source": {
-    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v1/2026-09-30_13-23-24/model_1000.pt",
-    "file": "model_1000.pt",
-    "size_bytes": 4925301,
-    "sha256": "8a9936d00fcf196cc086741d2f65f7f043cfa41cc12da63383c24e1bf446728d",
-    "iteration": 1000
+    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v3/2026-10-12_11-32-11/model_950.pt",
+    "file": "model_950.pt",
+    "size_bytes": 5069647,
+    "sha256": "b2a0ab42ed52f89a95750b2647e5067424ee4d2e730a60f55272ddc2d66d623e",
+    "iteration": 950
   }
 }

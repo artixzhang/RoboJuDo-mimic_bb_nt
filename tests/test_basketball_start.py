@@ -44,50 +44,53 @@ class ManualStartTests(unittest.TestCase):
                 for call in send.call_args_list:
                     np.testing.assert_array_equal(call.args[0], p.hold_target)
         self.assertFalse(p.started)
-        self.assertEqual(p.policy.hold_steps, 0)
         old_sensors, old_actions = p.policy.sensor_history.copy(), p.policy.action_history.copy()
         self.press("[POLICY_START]")
         self.assertTrue(p.started)
-        self.assertEqual(p.policy.frame, 1)
-        self.assertEqual(p.policy.obs[0], 0)
+        np.testing.assert_array_equal(p.policy.obs[:3], [1, 0, 0])
         np.testing.assert_array_equal(p.policy.sensor_history[:-1], old_sensors[1:])
-        np.testing.assert_allclose(p.policy.obs[321:466], old_actions.ravel())
+        np.testing.assert_allclose(p.policy.obs[323:468], old_actions.ravel())
         self.trace.close()
         self.assertTrue(verify(self.trace.path)["history_ok"])
 
-    def test_prehold_only_counts_after_start_and_start_does_not_trigger_shot(self):
+    def test_ready_skill_selection_does_not_start_inference(self):
         p = self.p
-        p.cfg.policy.pre_hold = 0.03
         p.prepare(prepare_seconds=0)
-        for _ in range(10):
-            p.step()
-        self.assertEqual(p.policy.hold_steps, 0)
+        with patch.object(p.policy.policy, "get_action", side_effect=AssertionError):
+            self.press("[SKILL_2]")
+        self.assertFalse(p.started)
         self.press("[POLICY_START]")
-        self.assertEqual(p.policy.hold_steps, 1)
-        self.assertFalse(p.policy.active)
-        p.step()
-        p.step()
-        self.assertTrue(p.policy.active)
-        self.assertEqual(p.policy.frame, 0)
-        p.step()
-        self.assertEqual(p.policy.frame, 1)
+        np.testing.assert_array_equal(p.policy.obs[:3], [0, 0, 1])
 
-    def test_manual_prehold_needs_second_shot_key_and_reset_returns_to_ready(self):
+    def test_runtime_hoop_update_and_reset_returns_to_ready(self):
         p = self.p
-        p.cfg.policy.pre_hold = -1
         p.prepare(prepare_seconds=0)
-        self.press("[SHOT_TRIGGER]")
-        self.assertTrue(p.started)
-        self.assertFalse(p.policy.active)
         self.press("[POLICY_START]")
-        self.assertEqual(p.policy.frame, 0)
-        self.press("[SHOT_TRIGGER]")
-        self.assertEqual(p.policy.frame, 1)
+        self.press("[SKILL_1]")
+        p.ctrl_manager.get_ctrl_data.return_value = Box(COMMANDS=[], KeyboardCtrl={"hoop_pos_cyl": [4, 0.2, 2]})
+        p.step()
+        np.testing.assert_allclose(p.policy.obs[-3:], [1, 0.4, 0.5])
         self.press("[MOTION_RESET]")
         self.assertFalse(p.started)
         self.assertIsNone(p.started_ns)
-        with patch.object(p.policy.policy, "get_action", side_effect=AssertionError):
-            p.step()
+        self.assertEqual(p.policy.command_id, 0)
+        np.testing.assert_allclose(p.policy.hoop_pos, [4, 0.2, 2])
+        p.step()
+        self.trace.close()
+        self.assertTrue(verify(self.trace.path)["history_ok"])
+
+    def test_conflicting_and_invalid_skills_keep_current_selection(self):
+        p = self.p
+        p.prepare(prepare_seconds=0)
+        self.press("[SKILL_2]")
+        p.ctrl_manager.get_ctrl_data.return_value = Box(COMMANDS=["[SKILL_0]", "[SKILL_1]"])
+        p.step()
+        self.assertEqual(p.policy.command_id, 2)
+        self.press("[SKILL_5]")
+        self.assertEqual(p.policy.command_id, 2)
+        p.ctrl_manager.get_ctrl_data.return_value = Box(COMMANDS=["[SKILL_1]", "[SKILL_1]"])
+        p.step()
+        self.assertEqual(p.policy.command_id, 1)
 
     def test_ready_estop_preempts_start_and_latches(self):
         p = self.p
@@ -115,7 +118,7 @@ class ManualStartTests(unittest.TestCase):
         ):
             p.policy.policy.raw_action = np.ones(29)
             self.press("[POLICY_START]")
-            self.press("[SHOT_TRIGGER]")
+            self.press("[SKILL_1]")
             for _ in range(8):
                 p.step()
             self.assertEqual(infer.call_count, 10)
@@ -205,7 +208,7 @@ from robojudo.tools.basketball_log import BasketballLog
 from scripts.analyze_basketball_link import write_report
 cfg = make_config(parse_args(["--real", "--no_keyboard", "--link_test"]))
 assert cfg.env.env_type == "UnitreeCppEnv" and not cfg.auto_start
-assert cfg.ctrl[0].triggers_extra["Start"] == "[POLICY_START]"
+assert cfg.ctrl[0].triggers["Start"] == "[POLICY_START]"
 cfg.ctrl = []
 with tempfile.TemporaryDirectory() as directory:
     trace = BasketballLog(directory, cfg, {})

@@ -3,6 +3,7 @@ from queue import Empty, Queue
 
 from robojudo.controller import Controller, ctrl_registry
 from robojudo.controller.ctrl_cfgs import KeyboardCtrlCfg
+from robojudo.controller.utils.hoop_input import HoopInput
 from robojudo.controller.utils.keyboard import KeyboardThread
 
 
@@ -21,6 +22,7 @@ class KeyboardCtrl(Controller):
 
     def reset(self):
         self._pressed_keys = set()
+        self.hoop_input = HoopInput()
         while not self.event_queue.empty():
             try:
                 self.event_queue.get_nowait()
@@ -53,6 +55,13 @@ class KeyboardCtrl(Controller):
                 if event["name"] in self._pressed_keys:
                     continue
                 self._pressed_keys.add(event["name"])
+            if self.cfg_ctrl.hoop_input and event["pressed"]:
+                consumed, position = self.hoop_input.feed(event["name"])
+                if position is not None:
+                    ctrl_data["hoop_pos_cyl"] = position
+                if consumed:
+                    ctrl_data["keyboard_event"].remove(event)
+                    continue
             if event["type"] == "keyboard" and event["pressed"] == self.cfg_ctrl.trigger_on_press:
                 command = self.triggers.get(event["name"], None)
                 if command is not None:

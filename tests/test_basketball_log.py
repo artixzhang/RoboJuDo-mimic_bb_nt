@@ -22,7 +22,7 @@ class TextLogTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.cfg = make_config(parse_args(["--headless", "--auto_start", "--pre_hold", "-1"]))
+        self.cfg = make_config(parse_args(["--headless", "--auto_start"]))
 
     def rows(self, trace):
         return [json.loads(line) for line in (trace.path / "trace.jsonl").read_text().splitlines()]
@@ -33,7 +33,7 @@ class TextLogTests(unittest.TestCase):
         try:
             pipeline.prepare(prepare_seconds=0.02)
             pipeline.step()
-            pipeline.ctrl_manager.get_ctrl_data = Mock(return_value=Box(COMMANDS=["[SHOT_TRIGGER]"]))
+            pipeline.ctrl_manager.get_ctrl_data = Mock(return_value=Box(COMMANDS=["[SKILL_1]"]))
             pipeline.step()
             pipeline.ctrl_manager.get_ctrl_data.return_value = Box(COMMANDS=[])
             for _ in range(166):
@@ -49,13 +49,13 @@ class TextLogTests(unittest.TestCase):
         samples = [r for r in rows if r["type"] == "sample"]
         control = [r for r in samples if r["stage"] == "control"]
         self.assertEqual(len([r for r in samples if r["stage"] == "prepare"]), 4)
-        self.assertEqual(len(control[0]["observation"]), 469)
+        self.assertEqual(len(control[0]["observation"]), 471)
         self.assertEqual(len(control[0]["raw_action"]), 29)
         self.assertEqual(len(control[0]["target"]), 29)
         self.assertEqual(len(control[0]["env"]["dof_pos"]), 29)
-        self.assertEqual(control[0]["mode"], "pre_hold")
-        self.assertEqual(control[-1]["mode"], "post_hold")
-        self.assertEqual(control[-1]["frame"], 165)
+        self.assertEqual(control[0]["mode"], "active")
+        self.assertEqual(control[-1]["mode"], "active")
+        self.assertEqual(control[-1]["command_id"], 1)
         self.assertEqual(samples[-1]["stage"], "damping")
         self.assertIsNone(samples[-1]["target"])
         for row in control:
@@ -64,7 +64,7 @@ class TextLogTests(unittest.TestCase):
             self.assertGreaterEqual(row["timing_ms"]["inference_ms"], 0)
         events = {r["event"] for r in rows if r["type"] == "event"}
         self.assertTrue(
-            {"prepare_start", "prepare_complete", "shot_trigger", "reset_requested", "emergency_stop"} <= events
+            {"prepare_start", "prepare_complete", "skill_update", "reset_requested", "emergency_stop"} <= events
         )
         summary = json.loads((trace.path / "summary.json").read_text())
         self.assertEqual(summary["samples"], len(samples))
@@ -98,7 +98,7 @@ class TextLogTests(unittest.TestCase):
             with patch.object(pipeline.env, "step", side_effect=RuntimeError("failed send")):
                 with self.assertRaisesRegex(RuntimeError, "failed send"):
                     pipeline.step()
-            self.assertEqual(pipeline.policy.frame, 0)
+            self.assertEqual(pipeline.timestep, 0)
         finally:
             pipeline.env.close()
             trace.close("test_error")
