@@ -422,10 +422,10 @@
     "action_history": "repeat actual initial applied PD target minus nominal; retain histories across skill and hoop updates"
   },
   "export_source": {
-    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v3/2026-10-13_18-03-10/model_1000.pt",
+    "path": "/home/artix/Projects/bb_mimic_nt/logs/rsl_rl/g1_shoot_student_dagger_v3/2026-10-13_23-40-39/model_1000.pt",
     "file": "model_1000.pt",
     "size_bytes": 5088053,
-    "sha256": "d4f4d8793fad2f851ec9df9ec0ca75bf82db3013f712148c8b5507620b2e5745",
+    "sha256": "d4869c310d8152ec40c61e59ac8e182b02b1fe4fd2afa7fa0f8d4632f60ab4fd",
     "iteration": 1000
   }
 }
